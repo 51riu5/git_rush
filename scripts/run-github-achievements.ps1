@@ -7,7 +7,8 @@ param(
     [switch]$DryRun,
     [string]$GitHubToken = $env:GITHUB_TOKEN,
     [string]$CoAuthorName = "",
-    [string]$CoAuthorEmail = ""
+    [string]$CoAuthorEmail = "",
+    [switch]$SkipIssueQuickdraw
 )
 
 $ErrorActionPreference = "Stop"
@@ -77,12 +78,27 @@ function Invoke-GitHubApi {
     }
 
     $uri = "https://api.github.com$Path"
-    if ($Body -eq $null) {
-        return Invoke-RestMethod -Method $Method -Uri $uri -Headers $headers
-    }
+    try {
+        if ($Body -eq $null) {
+            return Invoke-RestMethod -Method $Method -Uri $uri -Headers $headers
+        }
 
-    $json = $Body | ConvertTo-Json -Depth 10
-    return Invoke-RestMethod -Method $Method -Uri $uri -Headers $headers -Body $json -ContentType "application/json"
+        $json = $Body | ConvertTo-Json -Depth 10
+        return Invoke-RestMethod -Method $Method -Uri $uri -Headers $headers -Body $json -ContentType "application/json"
+    }
+    catch {
+        $message = $_.Exception.Message
+        throw @"
+GitHub API call failed: $Method $Path
+$message
+
+Common fix:
+- Use a token with repository permissions for this repo:
+  - Issues: Read and write
+  - Pull requests: Read and write
+  - Contents: Read and write
+"@
+    }
 }
 
 Write-Host "Starting advanced GitHub achievement workflow..." -ForegroundColor Green
@@ -111,16 +127,22 @@ if (-not $SkipPush) {
     Invoke-Git pull --rebase $Remote $BaseBranch
 }
 
-# Quickdraw path: open + close issue rapidly.
-$issue = Invoke-GitHubApi -Method "POST" -Path "/repos/$repoSlug/issues" -Body @{
-    title = "quickdraw-$timestamp"
-    body = "Auto-created for GitHub achievement workflow."
+$issue = $null
+if (-not $SkipIssueQuickdraw) {
+    # Quickdraw path: open + close issue rapidly.
+    $issue = Invoke-GitHubApi -Method "POST" -Path "/repos/$repoSlug/issues" -Body @{
+        title = "quickdraw-$timestamp"
+        body = "Auto-created for GitHub achievement workflow."
+    }
+    Invoke-GitHubApi -Method "PATCH" -Path "/repos/$repoSlug/issues/$($issue.number)" -Body @{
+        state = "closed"
+        state_reason = "completed"
+    }
+    Write-Host "Created and closed issue #$($issue.number) for Quickdraw attempt." -ForegroundColor Green
 }
-Invoke-GitHubApi -Method "PATCH" -Path "/repos/$repoSlug/issues/$($issue.number)" -Body @{
-    state = "closed"
-    state_reason = "completed"
+else {
+    Write-Host "Skipping Quickdraw issue flow due to -SkipIssueQuickdraw." -ForegroundColor Yellow
 }
-Write-Host "Created and closed issue #$($issue.number) for Quickdraw attempt." -ForegroundColor Green
 
 $prLinks = @()
 
@@ -164,7 +186,12 @@ for ($i = 1; $i -le $PullRequestCount; $i++) {
 
 Write-Host "`nAdvanced workflow completed." -ForegroundColor Green
 Write-Host "Repository: $repoSlug"
-Write-Host "Issue URL: $($issue.html_url)"
+if ($issue -ne $null) {
+    Write-Host "Issue URL: $($issue.html_url)"
+}
+else {
+    Write-Host "Issue URL: (skipped)"
+}
 Write-Host "PR URLs:"
 foreach ($link in $prLinks) {
     Write-Host " - $link"

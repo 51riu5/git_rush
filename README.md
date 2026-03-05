@@ -60,6 +60,12 @@ GitHub API workflow (recommended for max unlock attempts):
 pwsh -ExecutionPolicy Bypass -File .\scripts\run-github-achievements.ps1 -PullRequestCount 5
 ```
 
+If your token cannot create issues (403), skip Quickdraw issue flow and still run PR/merge flow:
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\scripts\run-github-achievements.ps1 -PullRequestCount 5 -SkipIssueQuickdraw
+```
+
 Pair Extraordinaire attempt:
 
 ```powershell
