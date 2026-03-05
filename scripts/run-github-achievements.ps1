@@ -8,7 +8,8 @@ param(
     [string]$GitHubToken = $env:GITHUB_TOKEN,
     [string]$CoAuthorName = "",
     [string]$CoAuthorEmail = "",
-    [switch]$SkipIssueQuickdraw
+    [switch]$SkipIssueQuickdraw,
+    [switch]$StopOnApiError
 )
 
 $ErrorActionPreference = "Stop"
@@ -119,12 +120,14 @@ $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $workDir = ".achievement"
 New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 
-if (-not $SkipPush) {
-    Invoke-Git fetch $Remote
-}
 Invoke-Git checkout $BaseBranch
-if (-not $SkipPush) {
+
+if (-not $SkipPush -and -not $AllowDirty) {
+    Invoke-Git fetch $Remote
     Invoke-Git pull --rebase $Remote $BaseBranch
+}
+elseif (-not $SkipPush -and $AllowDirty) {
+    Write-Host "Skipping fetch/pull because -AllowDirty is enabled." -ForegroundColor Yellow
 }
 
 $issue = $null
@@ -145,6 +148,7 @@ else {
 }
 
 $prLinks = @()
+$manualPrLinks = @()
 
 for ($i = 1; $i -le $PullRequestCount; $i++) {
     $branch = "ach/pr-$timestamp-$i"
@@ -165,23 +169,36 @@ for ($i = 1; $i -le $PullRequestCount; $i++) {
         Invoke-Git push -u $Remote $branch
     }
 
-    $pr = Invoke-GitHubApi -Method "POST" -Path "/repos/$repoSlug/pulls" -Body @{
-        title = "achievement-pr-$timestamp-$i"
-        head = $branch
-        base = $BaseBranch
-        body = "Automated PR #$i for achievement workflow."
-        maintainer_can_modify = $true
+    try {
+        $pr = Invoke-GitHubApi -Method "POST" -Path "/repos/$repoSlug/pulls" -Body @{
+            title = "achievement-pr-$timestamp-$i"
+            head = $branch
+            base = $BaseBranch
+            body = "Automated PR #$i for achievement workflow."
+            maintainer_can_modify = $true
+        }
+
+        # YOLO path: merge without review.
+        Invoke-GitHubApi -Method "PUT" -Path "/repos/$repoSlug/pulls/$($pr.number)/merge" -Body @{
+            merge_method = "squash"
+            commit_title = "merge: achievement PR $i ($timestamp)"
+        } | Out-Null
+
+        $prLinks += $pr.html_url
+        Write-Host "Merged PR #$($pr.number): $($pr.html_url)" -ForegroundColor Green
     }
-
-    # YOLO path: merge without review.
-    Invoke-GitHubApi -Method "PUT" -Path "/repos/$repoSlug/pulls/$($pr.number)/merge" -Body @{
-        merge_method = "squash"
-        commit_title = "merge: achievement PR $i ($timestamp)"
-    } | Out-Null
-
-    $prLinks += $pr.html_url
-    Write-Host "Merged PR #$($pr.number): $($pr.html_url)" -ForegroundColor Green
-    Invoke-Git checkout $BaseBranch
+    catch {
+        $manualLink = "https://github.com/$repoSlug/pull/new/$branch"
+        $manualPrLinks += $manualLink
+        Write-Host "PR API step failed for branch '$branch'." -ForegroundColor Yellow
+        Write-Host "Open manually: $manualLink" -ForegroundColor Yellow
+        if ($StopOnApiError) {
+            throw
+        }
+    }
+    finally {
+        Invoke-Git checkout $BaseBranch
+    }
 }
 
 Write-Host "`nAdvanced workflow completed." -ForegroundColor Green
@@ -195,6 +212,12 @@ else {
 Write-Host "PR URLs:"
 foreach ($link in $prLinks) {
     Write-Host " - $link"
+}
+if ($manualPrLinks.Count -gt 0) {
+    Write-Host "Manual PR URLs (API permission missing):" -ForegroundColor Yellow
+    foreach ($link in $manualPrLinks) {
+        Write-Host " - $link"
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($CoAuthorName) -and -not [string]::IsNullOrWhiteSpace($CoAuthorEmail)) {
